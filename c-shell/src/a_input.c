@@ -1,4 +1,4 @@
-#include "input.h"
+#include "a_input.h"
 #include <errno.h>
 #include <unistd.h>
 

@@ -1,5 +1,5 @@
-#include "prompt.h"
-#include "shell.h"
+#include "a_prompt.h"
+#include "a_shell.h"
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>

@@ -8,7 +8,7 @@ SRC_DIR := src
 BUILD_DIR := build
 TARGET := shell.out
 
-SRCS := $(wildcard $(SRC_DIR)/*.c)
+SRCS := $(wildcard $(SRC_DIR)/*.c)   
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 .PHONY: all clean

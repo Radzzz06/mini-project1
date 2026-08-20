@@ -1,5 +1,5 @@
-#include "lexer.h"
-#include "state.h"
+#include "a_lexer.h"
+#include "a_state.h"
 #include <stdlib.h>
 #include <string.h>
 
