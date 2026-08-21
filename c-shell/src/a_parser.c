@@ -108,7 +108,7 @@ int parse(TokenList *list, JobList *result)
         }
     }
 
-    if (state == PARSE_NEED_WORD)
+    if (state == PARSE_NEED_WORD && expecting != EXPECT_JOB)
         valid = 0;
 
     if (valid == 0) {
