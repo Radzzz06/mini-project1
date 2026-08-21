@@ -104,8 +104,7 @@ static void frec_save(void)
         return;
 
     for (int i = 0; i < frec_count; i++)
-        fprintf(fp, "%ld %ld %s\n", frec_table[i].visits,
-                frec_table[i].last_time, frec_table[i].path);
+        fprintf(fp, "%ld %ld %s\n", frec_table[i].visits,frec_table[i].last_time, frec_table[i].path);
 
     fclose(fp);
 }

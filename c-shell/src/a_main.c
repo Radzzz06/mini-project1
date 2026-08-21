@@ -5,6 +5,7 @@
 #include "a_prompt.h"
 #include "a_shell.h"
 #include "b_builtins.h"
+#include "c_exec.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -21,7 +22,7 @@ static void run_job(Job *job)
         if (builtin_is_builtin(cmd->argv[0]) == 1)
             builtin_run(cmd->argc, cmd->argv);
         else
-            fprintf(stderr, "%s: command not found: %s\n", SHELL_NAME,cmd->argv[0]);
+            exec_run_command(cmd);
     }
 }
 
@@ -65,8 +66,8 @@ int main(void)
             continue;
         }
 
-        for (int i = 0; i < jobs.job_count; i++)
-            run_job(jobs.jobs[i]);
+        if (jobs.job_count > 0)
+            run_job(jobs.jobs[0]);
 
         joblist_free(&jobs);
         tokenlist_free(&tokens);
