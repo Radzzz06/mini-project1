@@ -19,10 +19,28 @@ static void run_job(Job *job)
         if (cmd->argc == 0)
             continue;
 
-        if (builtin_is_builtin(cmd->argv[0]) == 1)
+        if (builtin_is_builtin(cmd->argv[0]) == 1) {
+            int in_fd;
+            int saved_in = -1;
+
+            if (exec_open_input(cmd, &in_fd) == 0)
+                continue;
+
+            if (in_fd >= 0) {
+                saved_in = dup(STDIN_FILENO);
+                dup2(in_fd, STDIN_FILENO);
+                close(in_fd);
+            }
+
             builtin_run(cmd->argc, cmd->argv);
-        else
+
+            if (saved_in >= 0) {
+                dup2(saved_in, STDIN_FILENO);
+                close(saved_in);
+            }
+        } else {
             exec_run_command(cmd);
+        }
     }
 }
 
