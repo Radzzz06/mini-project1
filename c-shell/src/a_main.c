@@ -20,24 +20,37 @@ static void run_job(Job *job)
             continue;
 
         if (builtin_is_builtin(cmd->argv[0]) == 1) {
-            int in_fd;
+            Redirection redir;
             int saved_in = -1;
+            int saved_out = -1;
 
-            if (exec_open_input(cmd, &in_fd) == 0)
-                continue;
+            if (redir_open(cmd, &redir) == 0)
+                continue;            
 
-            if (in_fd >= 0) {
+            if (redir.in_fd >= 0) {
                 saved_in = dup(STDIN_FILENO);
-                dup2(in_fd, STDIN_FILENO);
-                close(in_fd);
+                dup2(redir.in_fd, STDIN_FILENO);
+            }
+            if (redir.out_fd >= 0) {
+                fflush(stdout);
+                saved_out = dup(STDOUT_FILENO);
+                dup2(redir.out_fd, STDOUT_FILENO);
             }
 
             builtin_run(cmd->argc, cmd->argv);
+
+            fflush(stdout);
 
             if (saved_in >= 0) {
                 dup2(saved_in, STDIN_FILENO);
                 close(saved_in);
             }
+            if (saved_out >= 0) {
+                dup2(saved_out, STDOUT_FILENO);
+                close(saved_out);
+            }
+
+            redir_finish(&redir);
         } else {
             exec_run_command(cmd);
         }

@@ -9,6 +9,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#define COPY_CHUNK 4096
+#define FILE_MODE 0644          
+
+// C1
 static int is_runnable(const char *path)
 {
     struct stat info;
@@ -21,6 +25,7 @@ static int is_runnable(const char *path)
         return 0;
     return 1;
 }
+
 
 static int join_path(char *dest, int size, const char *dir, const char *name)
 {
@@ -36,6 +41,7 @@ static int join_path(char *dest, int size, const char *dir, const char *name)
     strcat(dest, name);
     return 1;
 }
+
 
 static int search_in_path(const char *name, char *out, int out_size)
 {
@@ -60,7 +66,7 @@ static int search_in_path(const char *name, char *out, int out_size)
         if (colon != NULL)
             *colon = '\0';
 
-        if (dir[0] == '\0')
+        if (dir[0] == '\0')      
             dir = ".";
 
         if (join_path(candidate, EXEC_PATH_MAX, dir, name) == 1
@@ -71,8 +77,7 @@ static int search_in_path(const char *name, char *out, int out_size)
             }
         }
 
-        if(colon == NULL) cursor=NULL;
-        else cursor = colon + 1;
+        cursor = (colon == NULL) ? NULL : colon + 1;
     }
     free(path_copy);
     return found;
@@ -94,6 +99,7 @@ int exec_resolve(const char *name, char *out, int out_size)
     if (name[0] == '%')
         return search_in_path(name + 1, out, out_size);
 
+
     if (join_path(candidate, EXEC_PATH_MAX, ".", name) == 1 && is_runnable(candidate) == 1) {
         if ((int)strlen(candidate) < out_size) {
             strcpy(out, candidate);
@@ -101,12 +107,14 @@ int exec_resolve(const char *name, char *out, int out_size)
         }
     }
 
+    
     return search_in_path(name, out, out_size);
 }
 
+//redirection
 static int copy_all(int from_fd, int to_fd)
 {
-    char chunk[4096];
+    char chunk[COPY_CHUNK];
     ssize_t got;
 
     while ((got = read(from_fd, chunk, sizeof(chunk))) > 0) {
@@ -122,17 +130,40 @@ static int copy_all(int from_fd, int to_fd)
     return (got < 0) ? 0 : 1;
 }
 
+static int make_scratch_file(void)
+{
+    char template[] = "/tmp/cshell_tmpXXXXXX";
+    int fd = mkstemp(template);
 
-int exec_open_input(Command *cmd, int *fd_out)
+    if (fd < 0)
+        return -1;
+    unlink(template);
+    return fd;
+}
+
+static void close_fd_list(int *fds, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (fds[i] >= 0)
+            close(fds[i]);
+    }
+}
+
+static void redir_init(Redirection *redir)
+{
+    redir->in_fd = -1;
+    redir->out_fd = -1;
+    redir->target_count = 0;
+    redir->fan_out = 0;
+}
+
+// C2
+static int open_input(Command *cmd, Redirection *redir)
 {
     int fds[MAX_REDIRECTS];
     int count = 0;
-    int temp_fd;
-    char template[] = "/tmp/cshell_inXXXXXX";
+    int scratch;
 
-    *fd_out = -1;
-
-    
     for (int i = 0; i < cmd->redirect_count; i++) {
         if (cmd->redirects[i].type != REDIR_IN)
             continue;
@@ -140,47 +171,139 @@ int exec_open_input(Command *cmd, int *fd_out)
         fds[count] = open(cmd->redirects[i].file, O_RDONLY);
         if (fds[count] < 0) {
             fprintf(stderr, "%s: no such file or directory\n", SHELL_NAME);
-            for (int j = 0; j < count; j++)
-                close(fds[j]);
+            close_fd_list(fds, count);
             return 0;
         }
         count++;
     }
 
     if (count == 0)
-        return 1;                
+        return 1;                    
 
     if (count == 1) {
-        *fd_out = fds[0];         
+        redir->in_fd = fds[0];        
         return 1;
     }
 
-    
-    temp_fd = mkstemp(template);
-    if (temp_fd < 0) {
+
+    scratch = make_scratch_file();
+    if (scratch < 0) {
         fprintf(stderr, "%s: no such file or directory\n", SHELL_NAME);
-        for (int i = 0; i < count; i++)
-            close(fds[i]);
+        close_fd_list(fds, count);
         return 0;
     }
-    unlink(template);
 
     for (int i = 0; i < count; i++) {
-        copy_all(fds[i], temp_fd);
+        copy_all(fds[i], scratch);
         close(fds[i]);
     }
 
-    lseek(temp_fd, 0, SEEK_SET);  
-    *fd_out = temp_fd;
+    lseek(scratch, 0, SEEK_SET);      
+    redir->in_fd = scratch;
     return 1;
 }
 
+// C3
+static int open_output(Command *cmd, Redirection *redir)
+{
+    for (int i = 0; i < cmd->redirect_count; i++) {
+        int flags;
+        int fd;
+
+        if (cmd->redirects[i].type == REDIR_OUT)
+            flags = O_WRONLY | O_CREAT | O_TRUNC;     
+        else if (cmd->redirects[i].type == REDIR_APPEND)
+            flags = O_WRONLY | O_CREAT | O_APPEND;    
+        else
+            continue;
+
+        fd = open(cmd->redirects[i].file, flags, FILE_MODE);
+        if (fd < 0) {
+            fprintf(stderr, "%s: unable to create file for writing\n",
+                    SHELL_NAME);
+            close_fd_list(redir->targets, redir->target_count);
+            redir->target_count = 0;
+            return 0;
+        }
+
+        redir->targets[redir->target_count] = fd;
+        redir->target_count++;
+    }
+
+    if (redir->target_count == 0)
+        return 1;                     
+
+    if (redir->target_count == 1) {
+        redir->out_fd = redir->targets[0];
+        return 1;
+    }
+
+    redir->out_fd = make_scratch_file();
+    if (redir->out_fd < 0) {
+        fprintf(stderr, "%s: unable to create file for writing\n", SHELL_NAME);
+        close_fd_list(redir->targets, redir->target_count);
+        redir->target_count = 0;
+        return 0;
+    }
+    redir->fan_out = 1;
+    return 1;
+}
+
+int redir_open(Command *cmd, Redirection *redir)
+{
+    redir_init(redir);
+
+    if (open_input(cmd, redir) == 0)
+        return 0;
+
+    if (open_output(cmd, redir) == 0) {
+        if (redir->in_fd >= 0)
+            close(redir->in_fd);
+        redir->in_fd = -1;
+        return 0;
+    }
+    return 1;
+}
+
+void redir_apply(Redirection *redir)
+{
+    if (redir->in_fd >= 0) {
+        dup2(redir->in_fd, STDIN_FILENO);   
+        close(redir->in_fd);                
+    }
+    if (redir->out_fd >= 0) {
+        dup2(redir->out_fd, STDOUT_FILENO);
+        close(redir->out_fd);
+    }
+}
+
+void redir_finish(Redirection *redir)
+{
+    if (redir->fan_out == 1 && redir->out_fd >= 0) {
+        for (int i = 0; i < redir->target_count; i++) {
+            lseek(redir->out_fd, 0, SEEK_SET);  
+            copy_all(redir->out_fd, redir->targets[i]);
+        }
+    }
+
+    if (redir->out_fd >= 0 && redir->fan_out == 1)
+        close(redir->out_fd);
+
+    close_fd_list(redir->targets, redir->target_count);
+
+    if (redir->in_fd >= 0)
+        close(redir->in_fd);
+
+    redir_init(redir);
+}
+
+// C1 parts
 int exec_run_command(Command *cmd)
 {
     char path[EXEC_PATH_MAX];
+    Redirection redir;
     pid_t pid;
     int status = 0;
-    int in_fd = -1;
 
     if (cmd->argc == 0 || cmd->argv[0] == NULL)
         return -1;
@@ -190,7 +313,7 @@ int exec_run_command(Command *cmd)
 
         if ((int)strlen(cmd->argv[0]) >= EXEC_PATH_MAX)
             return -1;
-        strcpy(stripped, cmd->argv[0]);         
+        strcpy(stripped, cmd->argv[0]);
 
         if (exec_resolve(stripped, path, EXEC_PATH_MAX) == 0) {
             fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME,
@@ -204,39 +327,34 @@ int exec_run_command(Command *cmd)
         return -1;
     }
 
-    if (exec_open_input(cmd, &in_fd) == 0)
-        return -1;               
+    if (redir_open(cmd, &redir) == 0)
+        return -1;
 
-    fflush(stdout);          
-
+    fflush(stdout);              
     pid = fork();
     if (pid < 0) {
         perror("cshell: fork");
-        if (in_fd >= 0)
-            close(in_fd);
+        redir_finish(&redir);
         return -1;
     }
 
     if (pid == 0) {
-      
-        if (in_fd >= 0) {
-            dup2(in_fd, STDIN_FILENO);   
-            close(in_fd);                
-        }
+        redir_apply(&redir);
+        close_fd_list(redir.targets, redir.target_count);  
+
         execv(path, cmd->argv);
 
-        
         fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME,
                 cmd->argv[0]);
-        _exit(127);          
+        _exit(127);              
     }
 
-    
-    if (in_fd >= 0)
-        close(in_fd);            
-
-    if (waitpid(pid, &status, 0) < 0)
+    if (waitpid(pid, &status, 0) < 0) {
+        redir_finish(&redir);
         return -1;
+    }
+
+    redir_finish(&redir);       
 
     if (WIFEXITED(status))
         return WEXITSTATUS(status);
