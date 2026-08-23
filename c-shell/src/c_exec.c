@@ -1,5 +1,6 @@
 #include "c_exec.h"
 #include "a_shell.h"
+#include "b_builtins.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -41,7 +42,6 @@ static int join_path(char *dest, int size, const char *dir, const char *name)
     strcat(dest, name);
     return 1;
 }
-
 
 static int search_in_path(const char *name, char *out, int out_size)
 {
@@ -99,7 +99,6 @@ int exec_resolve(const char *name, char *out, int out_size)
     if (name[0] == '%')
         return search_in_path(name + 1, out, out_size);
 
-
     if (join_path(candidate, EXEC_PATH_MAX, ".", name) == 1 && is_runnable(candidate) == 1) {
         if ((int)strlen(candidate) < out_size) {
             strcpy(out, candidate);
@@ -107,7 +106,7 @@ int exec_resolve(const char *name, char *out, int out_size)
         }
     }
 
-    
+
     return search_in_path(name, out, out_size);
 }
 
@@ -129,6 +128,7 @@ static int copy_all(int from_fd, int to_fd)
     }
     return (got < 0) ? 0 : 1;
 }
+
 
 static int make_scratch_file(void)
 {
@@ -178,13 +178,12 @@ static int open_input(Command *cmd, Redirection *redir)
     }
 
     if (count == 0)
-        return 1;                    
+        return 1;                     
 
     if (count == 1) {
         redir->in_fd = fds[0];        
         return 1;
     }
-
 
     scratch = make_scratch_file();
     if (scratch < 0) {
@@ -219,8 +218,7 @@ static int open_output(Command *cmd, Redirection *redir)
 
         fd = open(cmd->redirects[i].file, flags, FILE_MODE);
         if (fd < 0) {
-            fprintf(stderr, "%s: unable to create file for writing\n",
-                    SHELL_NAME);
+            fprintf(stderr, "%s: unable to create file for writing\n",SHELL_NAME);
             close_fd_list(redir->targets, redir->target_count);
             redir->target_count = 0;
             return 0;
@@ -281,7 +279,7 @@ void redir_finish(Redirection *redir)
 {
     if (redir->fan_out == 1 && redir->out_fd >= 0) {
         for (int i = 0; i < redir->target_count; i++) {
-            lseek(redir->out_fd, 0, SEEK_SET);  
+            lseek(redir->out_fd, 0, SEEK_SET);   
             copy_all(redir->out_fd, redir->targets[i]);
         }
     }
@@ -297,64 +295,131 @@ void redir_finish(Redirection *redir)
     redir_init(redir);
 }
 
-// C1 parts
-int exec_run_command(Command *cmd)
+// C1 and C4
+static void child_exec(Command *cmd)
 {
     char path[EXEC_PATH_MAX];
-    Redirection redir;
-    pid_t pid;
-    int status = 0;
 
-    if (cmd->argc == 0 || cmd->argv[0] == NULL)
-        return -1;
+    if (builtin_is_builtin(cmd->argv[0]) == 1) {
+        builtin_run(cmd->argc, cmd->argv);
+        fflush(stdout);
+        _exit(0);
+    }
 
-    if (cmd->argv[0][0] == '%') {
-        char stripped[EXEC_PATH_MAX];
+    if (exec_resolve(cmd->argv[0], path, EXEC_PATH_MAX) == 0) {
+        const char *shown = cmd->argv[0];
 
-        if ((int)strlen(cmd->argv[0]) >= EXEC_PATH_MAX)
-            return -1;
-        strcpy(stripped, cmd->argv[0]);
+        if (shown[0] == '%')          
+            shown = shown + 1;
+        fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME, shown);
+        _exit(127);
+    }
 
-        if (exec_resolve(stripped, path, EXEC_PATH_MAX) == 0) {
-            fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME,
-                    stripped + 1);
-            return -1;
-        }
+    if (cmd->argv[0][0] == '%')
         memmove(cmd->argv[0], cmd->argv[0] + 1, strlen(cmd->argv[0]));
-    } else if (exec_resolve(cmd->argv[0], path, EXEC_PATH_MAX) == 0) {
-        fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME,
-                cmd->argv[0]);
-        return -1;
+
+    execv(path, cmd->argv);
+
+    fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME, cmd->argv[0]);
+    _exit(127);          
+}
+
+int exec_run_pipeline(Job *job)
+{
+    Redirection redirs[MAX_COMMANDS];
+    int opened[MAX_COMMANDS];
+    pid_t pids[MAX_COMMANDS];
+    int stage_count = job->command_count;
+    int prev_read = -1;          
+    int status = 0;
+    int last = -1;
+
+    for (int i = 0; i < stage_count; i++) {
+        Command *cmd = job->commands[i];
+        int pipe_fds[2];
+        int has_pipe = 0;
+        pid_t pid;
+
+        opened[i] = 0;
+        pids[i] = -1;
+
+        if (i < stage_count - 1) {
+            if (pipe(pipe_fds) < 0) {
+                perror("cshell: pipe");
+                break;
+            }
+            has_pipe = 1;
+        }
+
+        if (cmd->argc == 0 || redir_open(cmd, &redirs[i]) == 0) {
+            if (prev_read >= 0)
+                close(prev_read);
+            prev_read = -1;
+            if (has_pipe == 1) {
+                close(pipe_fds[1]);
+                prev_read = pipe_fds[0];
+            }
+            continue;
+        }
+        opened[i] = 1;
+
+        fflush(stdout);
+        pid = fork();
+        if (pid < 0) {
+            perror("cshell: fork");
+            break;
+        }
+
+        if (pid == 0) {
+            
+            if (prev_read >= 0) {
+                dup2(prev_read, STDIN_FILENO);
+                close(prev_read);
+            }
+
+            if (has_pipe == 1) {
+                close(pipe_fds[0]);            
+                dup2(pipe_fds[1], STDOUT_FILENO);
+                close(pipe_fds[1]);           
+            }
+
+            redir_apply(&redirs[i]);
+            close_fd_list(redirs[i].targets, redirs[i].target_count);
+
+            child_exec(cmd);                  
+        }
+
+
+        pids[i] = pid;
+        last = i;
+
+        if (prev_read >= 0)
+            close(prev_read);
+        prev_read = -1;
+
+        if (has_pipe == 1) {
+            close(pipe_fds[1]);        
+            prev_read = pipe_fds[0];   
+        }
     }
 
-    if (redir_open(cmd, &redir) == 0)
-        return -1;
+    if (prev_read >= 0)
+        close(prev_read);
 
-    fflush(stdout);              
-    pid = fork();
-    if (pid < 0) {
-        perror("cshell: fork");
-        redir_finish(&redir);
-        return -1;
+    for (int i = 0; i < stage_count; i++) {
+        if (pids[i] > 0) {
+            int child_status = 0;
+
+            waitpid(pids[i], &child_status, 0);
+            if (i == last)
+                status = child_status;
+        }
     }
 
-    if (pid == 0) {
-        redir_apply(&redir);
-        close_fd_list(redir.targets, redir.target_count);  
-
-        execv(path, cmd->argv);
-
-        fprintf(stderr, "%s: command not found (%s)\n", SHELL_NAME,
-                cmd->argv[0]);
-        _exit(127);              
+    for (int i = 0; i < stage_count; i++) {
+        if (opened[i] == 1)
+            redir_finish(&redirs[i]);
     }
-
-    if (waitpid(pid, &status, 0) < 0) {
-        redir_finish(&redir);
-        return -1;
-    }
-
-    redir_finish(&redir);       
 
     if (WIFEXITED(status))
         return WEXITSTATUS(status);

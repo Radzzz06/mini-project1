@@ -10,18 +10,18 @@ typedef struct {
     int out_fd;
     int targets[MAX_REDIRECTS];   
     int target_count;
-    int fan_out;                  
+    int fan_out;                
 } Redirection;
 
-//C2 and C3
+// C2 and C3
 int redir_open(Command *cmd, Redirection *redir);
 
 void redir_apply(Redirection *redir);
 
 void redir_finish(Redirection *redir);
 
-//C1
-int exec_run_command(Command *cmd);
+// C1 and C4
+int exec_run_pipeline(Job *job);
 
 int exec_resolve(const char *name, char *out, int out_size);
 

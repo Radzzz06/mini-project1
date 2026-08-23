@@ -13,6 +13,11 @@
 
 static void run_job(Job *job)
 {
+    if (job->command_count != 1) {
+        exec_run_pipeline(job);
+        return;
+    }
+
     for (int i = 0; i < job->command_count; i++) {
         Command *cmd = job->commands[i];
 
@@ -26,7 +31,6 @@ static void run_job(Job *job)
 
             if (redir_open(cmd, &redir) == 0)
                 continue;            
-
             if (redir.in_fd >= 0) {
                 saved_in = dup(STDIN_FILENO);
                 dup2(redir.in_fd, STDIN_FILENO);
@@ -52,7 +56,8 @@ static void run_job(Job *job)
 
             redir_finish(&redir);
         } else {
-            exec_run_command(cmd);
+            exec_run_pipeline(job);
+            return;                 
         }
     }
 }
