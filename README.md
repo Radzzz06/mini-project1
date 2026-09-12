@@ -4,6 +4,8 @@ Part completed so far-
 1. Part A
 2. Part B
 3. Part C
+4. Part D
+5. Part E
 
 # C Shell
 
