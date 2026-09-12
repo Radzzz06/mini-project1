@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 // Map a stat mode to the short TYPE label spy prints 
 static const char *type_of(const char *path)
@@ -127,12 +128,30 @@ int spy_run(int argc, char **argv)
 
     if (argc == 1) pid = getpid();
     else if (argc == 2) pid = (pid_t)atoi(argv[1]);
-    else { fprintf(stderr, "spy: invalid syntax\n"); return 1; }
+    else 
+    { 
+        fprintf(stderr, "spy: invalid syntax\n"); 
+        return 1; 
+    }
 
     char base[64];
     struct stat st;
     snprintf(base, sizeof base, "/proc/%d", (int)pid);
-    if (stat(base, &st) != 0) { fprintf(stderr, "spy: no such process\n"); return 1; }
+    if (stat(base, &st) != 0) 
+    { 
+        fprintf(stderr, "spy: no such process\n"); 
+        return 1; 
+    }
+
+    char fddir[80];
+    snprintf(fddir, sizeof fddir, "/proc/%d/fd", (int)pid);
+    DIR *probe = opendir(fddir);
+    if (probe == NULL && errno == EACCES) 
+    { 
+        fprintf(stderr, "spy: permission denied\n"); 
+        return 1; 
+    }
+    if (probe != NULL) closedir(probe);
 
     printf("%-6s %-6s %-6s %s\n", "PID", "FD", "TYPE", "PATH");
     emit_link(pid, "cwd", "cwd");

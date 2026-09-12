@@ -254,7 +254,7 @@ static FgResult wait_group(pid_t pgid, int nalive, int timeout_secs)
                 }
                 continue;
             }
-            break;                                    // ECHILD etc.    
+            break; // ECHILD etc  
         }
         if (WIFSTOPPED(st))
             {
@@ -287,6 +287,12 @@ static void launch_pipeline(Job *job, int background)
 
     if (stages > JOB_MAX_PIDS) stages = JOB_MAX_PIDS;
     build_names(job, name, cmdline);
+    int syncfd[2];
+    if (pipe(syncfd) < 0) 
+    { 
+        perror("cshell: pipe"); 
+        return; 
+    }
 
     sigchld_block();
 
@@ -346,6 +352,12 @@ static void launch_pipeline(Job *job, int background)
             }
             redir_apply(&redirs[i]);
             for (int t = 0; t < redirs[i].target_count; t++) close(redirs[i].targets[t]);
+            close(syncfd[1]);
+            { 
+                char c; 
+                while (read(syncfd[0], &c, 1) > 0) { } // wait for parent
+            }  
+            close(syncfd[0]);
             child_run(cmd);
         }
 
@@ -361,6 +373,7 @@ static void launch_pipeline(Job *job, int background)
         prev_read = has_pipe ? (close(pipe_fds[1]), pipe_fds[0]) : -1;
     }
     if (prev_read >= 0) close(prev_read);
+    close(syncfd[0]);
 
     // Background
     if (background == 1) 
@@ -379,12 +392,14 @@ static void launch_pipeline(Job *job, int background)
             printf("[%d] %d\n", slot->job_id, (int)pgid);   // [job] pid 
             fflush(stdout);
         }
+        close(syncfd[1]);
         for (int i = 0; i < stages; i++) if (opened[i]) redir_finish(&redirs[i]);
         sigchld_unblock();
         return;
     }
 
     // Foreground
+    close(syncfd[1]);
     take_terminal(pgid);
     FgResult r = wait_group(pgid, npids, 0);
     take_terminal(shell_pgid);                    // reclaim terminal  
@@ -492,14 +507,14 @@ static void jobs_resume(int argc, char **argv)
     kill(-j->pgid, SIGCONT);
     j->status = JS_RUNNING;
 
-    if (is_fg == 0) 
-    {                                 // bg
+    if (is_fg == 0)          // bg
+    {                                
         printf("[%d] + Running    %s\n", j->job_id, j->cmdline);
         fflush(stdout);
         return;
     }
 
-    printf("%s\n", j->cmdline);                        // fg: echo cmd (rule 11)
+    printf("%s\n", j->cmdline);   // fg: echo cmd (rule 11)
     fflush(stdout);
 
     pid_t pgid = j->pgid;
@@ -513,7 +528,7 @@ static void jobs_resume(int argc, char **argv)
     FgResult r = wait_group(pgid, nalive, timeout);
     take_terminal(shell_pgid);
 
-    j = job_find_by_id(id);                            // re-find (may be gone)
+    j = job_find_by_id(id);  // re-find (may be gone)
     if (r == FG_DONE) 
     {
         if (j) j->in_use = 0;
