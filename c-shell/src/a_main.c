@@ -13,12 +13,11 @@
 int main(void)
 {
     char line[MAX_INPUT_LEN];
-    int eof_warned = 0;          // armed after "there are stopped jobs"
 
     if (shell_init() != 0)
         return 1;
 
-    jobs_init();
+    jobs_init();                 // Part D: SIGCHLD reaper + job table
 
     while (1) {
         TokenList tokens;
@@ -29,35 +28,36 @@ int main(void)
         write(STDOUT_FILENO, prompt, strlen(prompt));
 
         status = read_line(line, MAX_INPUT_LEN);
-
-        if (status == INPUT_INT) {            // Ctrl-C: fresh prompt 
-            eof_warned = 0;
-            continue;
-        }
-        if (status == INPUT_EOF) {            // Ctrl-D on empty line
-            if (jobs_has_stopped() && eof_warned == 0) {
-                fprintf(stderr, "cshell: there are stopped jobs\n");
-                eof_warned = 1;               // second Ctrl-D will exit
-                continue;
-            }
-            jobs_hangup_all();                // SIGHUP tracked jobs (E2 r10)
+        if (status == INPUT_EOF) 
+        {
             printf("\n");
             break;
         }
-        eof_warned = 0;                       // any real input disarms it
-
         if (status == INPUT_ERROR) break;
-        if (status == INPUT_TOO_LONG) { shell_syntax_error(); continue; }
+        if (status == INPUT_TOO_LONG) 
+        {
+            shell_syntax_error();
+            continue;
+        }
 
-        if (lex(line, &tokens) == 0) { shell_syntax_error(); continue; }
-        if (tokens.count == 0) { tokenlist_free(&tokens); continue; }
-        if (parse(&tokens, &jobs) == 0) {
+        if (lex(line, &tokens) == 0) 
+        {
+            shell_syntax_error();
+            continue;
+        }
+        if (tokens.count == 0) 
+        {
+            tokenlist_free(&tokens);
+            continue;
+        }
+        if (parse(&tokens, &jobs) == 0) 
+        {
             shell_syntax_error();
             tokenlist_free(&tokens);
             continue;
         }
 
-        jobs_run_sequence(&jobs, line);
+        jobs_run_sequence(&jobs, line);   // Part D: run every job in order
 
         joblist_free(&jobs);
         tokenlist_free(&tokens);
