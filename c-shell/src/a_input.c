@@ -1,6 +1,7 @@
 #include "a_input.h"
 #include <errno.h>
 #include <unistd.h>
+#include "a_shell.h"
 
 int read_line(char *buffer, int size)
 {
@@ -14,9 +15,18 @@ int read_line(char *buffer, int size)
         char ch;
         int bytes = (int)read(STDIN_FILENO, &ch, 1);
 
-        if (bytes < 0) {
-            if (errno == EINTR)
-                continue; 
+        if (bytes < 0) 
+        {
+            if (errno == EINTR) 
+            {
+                if (shell_sigint_flag) // Ctrl-C: drop the line
+                {       
+                    shell_sigint_flag = 0;
+                    buffer[0] = '\0';
+                    return INPUT_INT;
+                }
+            continue;                      // other signal: keep reading 
+            }
             return INPUT_ERROR;
         }
         if (bytes == 0) {

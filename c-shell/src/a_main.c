@@ -13,6 +13,7 @@
 int main(void)
 {
     char line[MAX_INPUT_LEN];
+    int eof_warned = 0;
 
     if (shell_init() != 0)
         return 1;
@@ -27,12 +28,25 @@ int main(void)
 
         write(STDOUT_FILENO, prompt, strlen(prompt));
 
-        status = read_line(line, MAX_INPUT_LEN);
-        if (status == INPUT_EOF) 
-        {
-            printf("\n");
+        status = read_line(line, MAX_INPUT_LEN); 
+        if (status == INPUT_INT)  // Ctrl-C: fresh prompt 
+        {            
+            eof_warned = 0;
+            continue;
+        }
+        if (status == INPUT_EOF) // Ctrl-D on empty line 
+        {            
+            if (jobs_has_stopped() && eof_warned == 0) 
+            {
+            fprintf(stderr, "cshell: there are stopped jobs\n");
+            eof_warned = 1;
+            continue;
+            }
+        jobs_hangup_all();
+        printf("\n");
             break;
         }
+        eof_warned = 0;
         if (status == INPUT_ERROR) break;
         if (status == INPUT_TOO_LONG) 
         {

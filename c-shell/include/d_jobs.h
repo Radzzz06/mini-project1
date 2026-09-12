@@ -5,8 +5,10 @@
 #include <sys/types.h>
 
 // How many background/stopped jobs we can track at once, and how long a command name we remember for the status messages
-#define JOBS_MAX 256
+#define JOBS_MAX 64
+#define JOB_MAX_PIDS 64
 #define JOB_NAME_MAX 1024
+#define JOB_PNAME_MAX 64
 
 // A job is either running or stopped
 typedef enum {
@@ -19,7 +21,8 @@ typedef struct {
     int in_use;                 // is this slot occupied?
     int job_id;                 // session-wide number, never reused
     pid_t pgid;                   //process-group id (== first pid) 
-    pid_t pids[MAX_COMMANDS];     // every pid in the pipeline 
+    pid_t pids[JOB_MAX_PIDS];    // every pid in the pipeline 
+    char pnames[JOB_MAX_PIDS][JOB_PNAME_MAX];   // command name per pid, for activities
     int npids;                  // how many pids we stored
     int nalive;                 // how many are still not reaped 
     JobStatus status;              // running / stopped  
@@ -37,5 +40,8 @@ void jobs_init(void);
  // 3. if a foreground command cannot be started at all, print "command not found" and stop the rest of the sequence (D1 rule 3).
  // Pass the raw input line so we can remember each job's command text. 
 void jobs_run_sequence(JobList *list, const char *raw_line);
+
+int  jobs_has_stopped(void);
+void jobs_hangup_all(void);
 
 #endif

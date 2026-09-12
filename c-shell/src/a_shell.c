@@ -24,3 +24,5 @@ void shell_syntax_error(void)
 {
     fprintf(stderr, "cshell: invalid syntax\n");
 }
+
+volatile sig_atomic_t shell_sigint_flag = 0;
