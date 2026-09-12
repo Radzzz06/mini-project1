@@ -2,6 +2,8 @@
 #include "a_shell.h"
 #include "b_builtins.h"
 #include "c_exec.h"
+#include "f_spy.h"
+#include "f_snoop.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -645,6 +647,16 @@ static int run_foreground(Job *job)
         if (strcmp(cmd->argv[0], "ping") == 0) 
         { 
             jobs_ping(cmd->argc, cmd->argv);   
+            return RUN_OK; 
+        }
+        if (strcmp(cmd->argv[0], "spy") == 0) 
+        { 
+            spy_run(cmd->argc, cmd->argv);  
+            return RUN_OK; 
+        }
+        if (strcmp(cmd->argv[0], "snoop") == 0) 
+        { 
+            snoop_run(cmd->argc, cmd->argv); 
             return RUN_OK; 
         }
 
