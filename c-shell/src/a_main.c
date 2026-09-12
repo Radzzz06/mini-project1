@@ -4,70 +4,21 @@
 #include "a_parser.h"
 #include "a_prompt.h"
 #include "a_shell.h"
-#include "b_builtins.h"
-#include "c_exec.h"
+#include "d_jobs.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-static void run_job(Job *job)
-{
-    if (job->command_count != 1) {
-        exec_run_pipeline(job);
-        return;
-    }
-
-    for (int i = 0; i < job->command_count; i++) {
-        Command *cmd = job->commands[i];
-
-        if (cmd->argc == 0)
-            continue;
-
-        if (builtin_is_builtin(cmd->argv[0]) == 1) {
-            Redirection redir;
-            int saved_in = -1;
-            int saved_out = -1;
-
-            if (redir_open(cmd, &redir) == 0)
-                continue;            
-            if (redir.in_fd >= 0) {
-                saved_in = dup(STDIN_FILENO);
-                dup2(redir.in_fd, STDIN_FILENO);
-            }
-            if (redir.out_fd >= 0) {
-                fflush(stdout);
-                saved_out = dup(STDOUT_FILENO);
-                dup2(redir.out_fd, STDOUT_FILENO);
-            }
-
-            builtin_run(cmd->argc, cmd->argv);
-
-            fflush(stdout);
-
-            if (saved_in >= 0) {
-                dup2(saved_in, STDIN_FILENO);
-                close(saved_in);
-            }
-            if (saved_out >= 0) {
-                dup2(saved_out, STDOUT_FILENO);
-                close(saved_out);
-            }
-
-            redir_finish(&redir);
-        } else {
-            exec_run_pipeline(job);
-            return;                 
-        }
-    }
-}
-
 int main(void)
 {
     char line[MAX_INPUT_LEN];
+    int eof_warned = 0;          // armed after "there are stopped jobs"
 
     if (shell_init() != 0)
         return 1;
+
+    jobs_init();
 
     while (1) {
         TokenList tokens;
@@ -78,32 +29,35 @@ int main(void)
         write(STDOUT_FILENO, prompt, strlen(prompt));
 
         status = read_line(line, MAX_INPUT_LEN);
-        if (status == INPUT_EOF) {
+
+        if (status == INPUT_INT) {            // Ctrl-C: fresh prompt 
+            eof_warned = 0;
+            continue;
+        }
+        if (status == INPUT_EOF) {            // Ctrl-D on empty line
+            if (jobs_has_stopped() && eof_warned == 0) {
+                fprintf(stderr, "cshell: there are stopped jobs\n");
+                eof_warned = 1;               // second Ctrl-D will exit
+                continue;
+            }
+            jobs_hangup_all();                // SIGHUP tracked jobs (E2 r10)
             printf("\n");
             break;
         }
-        if (status == INPUT_ERROR) break;
-        if (status == INPUT_TOO_LONG) {
-            shell_syntax_error();
-            continue;
-        }
+        eof_warned = 0;                       // any real input disarms it
 
-        if (lex(line, &tokens) == 0) {
-            shell_syntax_error();
-            continue;
-        }
-        if (tokens.count == 0) {
-            tokenlist_free(&tokens);
-            continue;
-        }
+        if (status == INPUT_ERROR) break;
+        if (status == INPUT_TOO_LONG) { shell_syntax_error(); continue; }
+
+        if (lex(line, &tokens) == 0) { shell_syntax_error(); continue; }
+        if (tokens.count == 0) { tokenlist_free(&tokens); continue; }
         if (parse(&tokens, &jobs) == 0) {
             shell_syntax_error();
             tokenlist_free(&tokens);
             continue;
         }
 
-        if (jobs.job_count > 0)
-            run_job(jobs.jobs[0]);
+        jobs_run_sequence(&jobs, line);
 
         joblist_free(&jobs);
         tokenlist_free(&tokens);
