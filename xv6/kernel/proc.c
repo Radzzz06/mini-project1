@@ -15,7 +15,14 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
-extern uint ticks;   // global timer tick counter (kernel/trap.c)
+extern uint ticks;   // global timer tick counter 
+
+// MLFQ event log. Compiled in only with LOG=1; otherwise expands to nothing.
+#ifdef MLFQ_LOG
+#define MLFQLOG(...) printk(__VA_ARGS__)
+#else
+#define MLFQLOG(...) do {} while (0)
+#endif
 
 #ifdef MLFQ
 // Monotonic counter giving each (re)insertion into a queue a unique, increasing sequence number. Within a queue the RUNNABLE proc with the smallest enter_seq is the "head" (oldest), which yields FIFO order and round-robin in queue 3.
@@ -406,11 +413,16 @@ kexit(int status)
   p->state = ZOMBIE;
   p->etime = ticks;   // completion tick (turnaround = etime - ctime)
 
+  #ifdef PERF
+  printk("[METRIC] pid=%d name=%s ctime=%d stime=%d etime=%d rtime=%d\n",p->pid, p->name, p->ctime, p->stime, p->etime, p->rtime);
+  #endif
+
   release(&wait_lock);
 
   // Jump into the scheduler, never to return.
   sched();
   panic("zombie exit");
+  
 }
 
 // Wait for a child process to exit and return its pid.
@@ -464,6 +476,18 @@ kwait(uint64 addr)
     release(&wait_lock);
     sleep();
     acquire(&wait_lock);
+  }
+}
+// Count one CPU tick for whatever process is RUNNING (any scheduler).
+void
+update_time(void)
+{
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNING)
+      p->rtime++;
+    release(&p->lock);
   }
 }
 
@@ -525,6 +549,47 @@ scheduler(void)
       asm volatile("wfi");
     }
   }
+#elif defined(FIFO)
+  // FIFO: pick the RUNNABLE process that arrived earliest (smallest ctime)
+  // and run it. No time slicing, no preemption.
+  while(1) {
+    intr_on();
+    intr_off();
+
+    struct proc *best = 0;                    // earliest-arrival candidate
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE) {
+        if (best == 0) {
+          best = p;                           // first one found; keep its lock
+          continue;
+        }
+        if (p->ctime < best->ctime) {         // this one arrived earlier
+          release(&best->lock);
+          best = p;
+        } else {
+          release(&p->lock);
+        }
+      } else {
+        release(&p->lock);
+      }
+    }
+
+    if (best) {
+      if (best->stime < 0)
+        best->stime = ticks;   
+      best->state = RUNNING;
+      c->proc = best;
+      swtch(&c->context, &best->context);
+
+      mycpu()->intena = 0;
+      c->proc = 0;
+      release(&best->lock);
+    } else {
+      asm volatile("wfi");                     // nothing to run; idle
+    }
+  }
+
 #else
   while(1) {
     // The most recent process to run may have had interrupts
@@ -539,9 +604,8 @@ scheduler(void)
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
+        // Switch to chosen process. It is the process's job to release its lock and then reacquire it before jumping back to us.
+        if (p->stime < 0) p->stime = ticks;   // first time on a CPU = response point
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
@@ -610,8 +674,7 @@ void mlfq_tick_yield(void)
   if (p == 0)
     return;
 
-  acquire(&p->lock);
-  p->rtime++;         // one more tick of CPU time
+  acquire(&p->lock);      
   p->ticks_used++;    // one more tick in the current slice
   MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=TICK\n", ticks, p->pid, p->priority);
 

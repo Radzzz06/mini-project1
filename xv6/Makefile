@@ -82,6 +82,15 @@ CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 &
 # Scheduler selection (compile-time), else remains round robin
 ifeq ($(SCHEDULER),MLFQ)
 CFLAGS += -D MLFQ
+ifeq ($(LOG),1)
+CFLAGS += -D MLFQ_LOG
+endif
+endif
+ifeq ($(PERF),1)
+CFLAGS += -D PERF
+endif
+ifeq ($(SCHEDULER),FIFO)
+CFLAGS += -D FIFO
 endif
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)

@@ -83,8 +83,10 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if (which_dev == 2)
-#ifdef MLFQ
+#if defined(MLFQ)
     mlfq_tick_yield();
+#elif defined(FIFO)
+    ;                 // FIFO is non-preemptive: don't yield on a timer tick
 #else
     yield();
 #endif
@@ -185,6 +187,7 @@ clockintr()
 #endif
     wakeup(&ticks);
     release(&tickslock);
+    update_time();
 #ifdef MLFQ
     // Rule 7: every BOOST_INTERVAL ticks, boost all processes back to queue 0
     if (t % BOOST_INTERVAL == 0)
