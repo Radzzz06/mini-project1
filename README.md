@@ -279,4 +279,4 @@ Analysis is in `xv6/report.md`.
 ## 7. AI-usage.pdf
 
 Due to the file exceeding 20 MB, I have attached the drive link to the AI-usage.pdf
-https://drive.google.com/file/d/13NzKaI3RbGn7sztceHG-de3cw0XbxPqr/view?usp=share_link
+[https://drive.google.com/file/d/13NzKaI3RbGn7sztceHG-de3cw0XbxPqr/view?usp=share_link](https://drive.google.com/file/d/1fXneY193SNtkLvaE_VAoQxtwDxV7hzSR/view?usp=share_link)
