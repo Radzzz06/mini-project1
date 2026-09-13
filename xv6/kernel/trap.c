@@ -83,7 +83,11 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if (which_dev == 2)
+#ifdef MLFQ
+    mlfq_tick_yield();
+#else
     yield();
+#endif
 
   prepare_return();
 
@@ -155,7 +159,11 @@ kerneltrap()
 
   // give up the CPU if this is a timer interrupt.
   if (which_dev == 2 && myproc() != 0)
+#ifdef MLFQ
+    mlfq_tick_yield();
+#else
     yield();
+#endif
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -167,10 +175,21 @@ void
 clockintr()
 {
   if (cpuid() == 0) {
+#ifdef MLFQ
+    uint t;
+#endif
     acquire(&tickslock);
     ticks++;
+#ifdef MLFQ
+    t = ticks;
+#endif
     wakeup(&ticks);
     release(&tickslock);
+#ifdef MLFQ
+    // Rule 7: every BOOST_INTERVAL ticks, boost all processes back to queue 0
+    if (t % BOOST_INTERVAL == 0)
+      mlfq_boost();
+#endif
   }
 
   // ask for the next timer interrupt. this also clears

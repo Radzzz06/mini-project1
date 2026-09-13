@@ -101,4 +101,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int priority;        // current queue: 0 (highest) .. NMLFQ-1 (lowest)
+  int ticks_used;      // timer ticks used in current slice at current queue
+  uint64 enter_seq;    // FIFO order of entering current queue (monotonic)
+  int ctime, stime, etime, rtime;   // metrics: create/first-run/exit/cpu ticks
 };

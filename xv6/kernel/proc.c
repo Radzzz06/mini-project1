@@ -15,6 +15,40 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+extern uint ticks;   // global timer tick counter (kernel/trap.c)
+
+#ifdef MLFQ
+// Monotonic counter giving each (re)insertion into a queue a unique, increasing sequence number. Within a queue the RUNNABLE proc with the smallest enter_seq is the "head" (oldest), which yields FIFO order and round-robin in queue 3.
+uint64 mlfq_seq = 0;
+
+// Time slice (in timer ticks) for each priority queue.
+int mlfq_timeslice[NMLFQ] = {1, 4, 8, 16};
+
+// Next FIFO sequence number (atomic; leaf operation, no locks held)
+static uint64
+mlfq_next_seq(void)
+{
+  return __sync_fetch_and_add(&mlfq_seq, 1);
+}
+
+// Is there a RUNNABLE process in a strictly higher-priority queue than `prio`? Used for strict-priority preemption at tick boundaries (Rule 2).
+static int
+mlfq_higher_priority_runnable(int prio)
+{
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE && p->priority < prio) 
+    {
+      release(&p->lock);
+      return 1;
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
+#endif
+
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
@@ -124,6 +158,20 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+
+  // Metrics: record arrival, reset first-run / exit / cpu-time bookkeeping.
+  p->ctime = ticks;
+  p->stime = -1;
+  p->etime = 0;
+  p->rtime = 0;
+
+#ifdef MLFQ
+  // Rule 1: a newly created process is placed at the end of queue 0.
+  p->priority = 0;
+  p->ticks_used = 0;
+  p->enter_seq = mlfq_next_seq();
+  MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=NEW\n", ticks, p->pid, p->priority);
+#endif
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -356,6 +404,7 @@ kexit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+  p->etime = ticks;   // completion tick (turnaround = etime - ctime)
 
   release(&wait_lock);
 
@@ -432,7 +481,52 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
-  for (;;) {
+
+#ifdef MLFQ
+  // MLFQ: always run a RUNNABLE process from the highest-priority non-empty queue; within a queue pick the one that entered earliest (smallestenter_seq) -> FIFO order, and round-robin in queue 3.
+  while(1) {
+    intr_on();
+    intr_off();
+
+    struct proc *best = 0;   // best candidate found so far (its lock is held)
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE) {
+        if (best == 0) {
+          best = p;           // keep p->lock held; move on
+          continue;
+        }
+        // Lower priority number wins; ties broken by earlier enter_seq.
+        if (p->priority < best->priority ||
+            (p->priority == best->priority && p->enter_seq < best->enter_seq)) {
+          release(&best->lock);
+          best = p;            // keep the new best locked
+        } else {
+          release(&p->lock);
+        }
+      } else {
+        release(&p->lock);
+      }
+    }
+
+    if (best) {
+      // best->lock is held here.
+      if (best->stime < 0)
+        best->stime = ticks;   // response time: first time it reaches a CPU
+      best->state = RUNNING;
+      c->proc = best;
+      swtch(&c->context, &best->context);
+
+      mycpu()->intena = 0;
+      c->proc = 0;
+      release(&best->lock);
+    } else {
+      // nothing to run; stop running on this core until an interrupt.
+      asm volatile("wfi");
+    }
+  }
+#else
+  while(1) {
     // The most recent process to run may have had interrupts
     // turned off; enable them to avoid a deadlock if all
     // processes are waiting. Then turn them back off
@@ -467,6 +561,7 @@ scheduler(void)
       asm volatile("wfi");
     }
   }
+#endif
 }
 
 // Switch to scheduler.  Must hold only p->lock
@@ -506,6 +601,62 @@ yield(void)
   sched();
   release(&p->lock);
 }
+
+#ifdef MLFQ
+// Called on every timer tick for the currently running process (from trap.c),Handles time-slice accounting, demotion on slice exhaustion, and strict-priority preemption
+void mlfq_tick_yield(void)
+{
+  struct proc *p = myproc();
+  if (p == 0)
+    return;
+
+  acquire(&p->lock);
+  p->rtime++;         // one more tick of CPU time
+  p->ticks_used++;    // one more tick in the current slice
+  MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=TICK\n", ticks, p->pid, p->priority);
+
+  if (p->ticks_used >= mlfq_timeslice[p->priority]) 
+  {
+    // Rule 4: used the whole slice -> move to tail of the next lower queue (or stay in queue NMLFQ-1 if already lowest). Reset the slice counter.
+    if (p->priority < NMLFQ - 1) p->priority++;
+    p->ticks_used = 0;
+    p->enter_seq = mlfq_next_seq();   // re-inserted at the tail of its queue
+    MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=DEMOTE\n", ticks, p->pid, p->priority);
+    p->state = RUNNABLE;
+    sched();
+    release(&p->lock);
+    return;
+  }
+  release(&p->lock);
+
+  // Rule 2: slice not yet exhausted, but if a higher-priority queue became non-empty, preempt now. The process keeps its priority, queue position,and accumulated slice usage, and resumes once the higher queue drains.
+  if (mlfq_higher_priority_runnable(p->priority)) {
+    acquire(&p->lock);
+    p->state = RUNNABLE;
+    sched();
+    release(&p->lock);
+  }
+}
+
+// Rule 7 (anti-starvation): move every process in the system to queue 0.Called from clockintr() every BOOST_INTERVAL ticks.
+void
+mlfq_boost(void)
+{
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++) 
+  {
+    acquire(&p->lock);
+    if (p->state == RUNNABLE || p->state == RUNNING || p->state == SLEEPING) 
+    {
+      p->priority = 0;
+      p->ticks_used = 0;
+      p->enter_seq = mlfq_next_seq();
+      MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=BOOST\n", ticks, p->pid, p->priority);
+    }
+    release(&p->lock);
+  }
+}
+#endif
 
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
@@ -567,6 +718,11 @@ sleep(void)
   acquire(&p->lock);
   if (p->chan != 0) {
     p->state = SLEEPING;
+#ifdef MLFQ
+    // Rule 5: a process that voluntarily gives up the CPU keeps its priority and gets a fresh time slice at the same queue when it becomes runnable
+    p->ticks_used = 0;
+    MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=SLEEP\n", ticks, p->pid, p->priority);
+#endif
     sched();
   }
   release(&p->lock);
@@ -589,6 +745,11 @@ wakeup(void *chan)
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+#ifdef MLFQ
+        // Rule 5: re-inserted at the tail of the same queue (priority unchanged)
+        p->enter_seq = mlfq_next_seq();
+        MLFQLOG("[MLFQ] t=%d pid=%d q=%d ev=WAKE\n", ticks, p->pid, p->priority);
+#endif
       }
     }
     release(&p->lock);
@@ -688,6 +849,9 @@ procdump(void)
   char *state;
 
   printk("\n");
+#ifdef MLFQ
+  printk("PID  STATE  NAME             Q  USED  SEQ    CTIME\n");
+#endif
   for (p = proc; p < &proc[NPROC]; p++) {
     if (p->state == UNUSED)
       continue;
@@ -695,7 +859,13 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+#ifdef MLFQ
+    printk("%d %s %s", p->pid, state, p->name);
+    printk("   q%d  %d  %d  %d", p->priority, p->ticks_used,(int)p->enter_seq, p->ctime);
+    printk("\n");
+#else
     printk("%d %s %s", p->pid, state, p->name);
     printk("\n");
+#endif
   }
 }
