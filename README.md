@@ -275,3 +275,8 @@ make clean && make qemu SCHEDULER=MLFQ PERF=1 CPUS=1 | tee mlfq_perf.txt
 python3 plot_compare.py --children-only fifo_perf.txt rr_perf.txt mlfq_perf.txt   # -> scheduler_comparison.png
 ```
 Analysis is in `xv6/report.md`.
+
+## 7. AI-usage.pdf
+
+Due to the file exceeding 20 MB, I have attached the drive link to the AI-usage.pdf
+https://drive.google.com/file/d/13NzKaI3RbGn7sztceHG-de3cw0XbxPqr/view?usp=share_link
