@@ -175,26 +175,25 @@ int reveal_command(int argc, char **argv)
     char target[PATH_LEN];
 
 
-    for (int i = 1; i < argc; i++) {
-        if (is_flag_group(argv[i]) == 1) {
-            for (int j = 1; argv[i][j] != '\0'; j++) {
-                if (argv[i][j] == 'a')
-                    show_all = 1;
-                else if (argv[i][j] == 't')
-                    recursive = 1;
-                else {
-                    builtin_error("reveal: invalid syntax");
-                    return 0;
-                }
-            }
-        } else {
-            if (target_arg != NULL) {          
-                builtin_error("reveal: invalid syntax");
-                return 0;
-            }
-            target_arg = argv[i];
+    for (int i = 1; i < argc; i++) 
+    {
+    if (is_flag_group(argv[i]) == 1) 
+    {
+        if (target_arg != NULL) 
+        {            
+            builtin_error("reveal: invalid syntax");
+            return 0;
         }
+        for (int j = 1; argv[i][j] != '\0'; j++) {
+            if (argv[i][j] == 'a') show_all = 1;
+            else if (argv[i][j] == 't') recursive = 1;
+            else { builtin_error("reveal: invalid syntax"); return 0; }
+        }
+    } else {
+        if (target_arg != NULL) { builtin_error("reveal: invalid syntax"); return 0; }
+        target_arg = argv[i];
     }
+}
 
     if (target_arg == NULL) {
         strcpy(target, ".");
